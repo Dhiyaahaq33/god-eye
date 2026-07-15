@@ -218,10 +218,10 @@ class GestureMind:
         self.last_action        = {k: 0 for k in COOLDOWN}
         self.gesture_history    = deque(maxlen=60)
         self.event_log          = deque(maxlen=10)
-        self.current_gesture    = "—"
-        self.current_emotion    = "—"
-        self.current_age        = "—"
-        self.current_gender     = "—"
+        self.current_gesture    = "-"
+        self.current_emotion    = "-"
+        self.current_age        = "-"
+        self.current_gender     = "-"
         self.emotion_scores     = {}
         self.face_bbox          = None
         self.scroll_dir         = 0           # -1 up, 0 none, +1 down
@@ -551,10 +551,10 @@ class GestureMind:
             result = self.face_result_q.get_nowait()
             emotions = result.get("emotion", {})
             dom_emo  = result.get("dominant_emotion", "neutral")
-            age      = result.get("age", "—")
+            age      = result.get("age", "-")
             gender_d = result.get("gender", {})
             if isinstance(gender_d, dict):
-                gender = max(gender_d, key=gender_d.get) if gender_d else "—"
+                gender = max(gender_d, key=gender_d.get) if gender_d else "-"
             else:
                 gender = str(gender_d)
 
@@ -571,97 +571,90 @@ class GestureMind:
     # ──────────────────────────────────────────────────────────────
 
     def _draw_panel(self, panel):
-        """Gambar panel kanan: info gesture, emosi, log"""
+        """Gambar panel kanan: info gesture, emosi, log -- layout ringkas & rapat"""
         panel[:] = np.array(C["panel"], dtype=np.uint8)
 
-        def txt(text, x, y, color=C["text"], scale=0.45, thick=1):
+        def txt(text, x, y, color=C["text"], scale=0.34, thick=1):
             cv2.putText(panel, text, (x, y),
                         cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+
+        def section(label, y):
+            """Label section kecil, huruf kapital, warna redup -- bukan headline besar."""
+            txt(label, 10, y, C["accent2"], 0.3, 1)
+            return y + 14
 
         def line(y, col=C["text_dim"]):
             cv2.line(panel, (10, y), (PANEL_W - 10, y), col, 1)
 
         def bar(label, value, y, max_val=100, color=C["accent"]):
-            txt(label, 10, y, C["text_dim"], 0.37)
-            bw = PANEL_W - 90
-            cv2.rectangle(panel, (85, y - 10), (85 + bw, y + 3), C["bar_bg"], -1)
+            txt(label, 10, y, C["text_dim"], 0.3)
+            bw = PANEL_W - 88
+            cv2.rectangle(panel, (78, y - 7), (78 + bw, y + 1), C["bar_bg"], -1)
             fill = int(bw * min(value / max_val, 1.0))
             if fill > 0:
-                cv2.rectangle(panel, (85, y - 10), (85 + fill, y + 3), color, -1)
-            txt(f"{value:.0f}%", 85 + bw + 5, y, C["text_dim"], 0.36)
+                cv2.rectangle(panel, (78, y - 7), (78 + fill, y + 1), color, -1)
+            txt(f"{value:.0f}%", 78 + bw + 5, y, C["text_dim"], 0.3)
 
-        y = 30
         # ── Header ──────────────────────────────────────────────
-        cv2.rectangle(panel, (0, 0), (PANEL_W, 50), (25, 20, 40), -1)
-        txt("GESTURE MIND", 10, y, C["accent"], 0.65, 2)
-        txt("v1.0", PANEL_W - 45, y, C["text_dim"], 0.4)
-        y += 22
+        cv2.rectangle(panel, (0, 0), (PANEL_W, 34), (25, 20, 40), -1)
+        txt("GESTURE MIND", 10, 21, C["accent"], 0.42, 1)
+        txt("v2.0", PANEL_W - 38, 21, C["text_dim"], 0.3)
+        y = 48
         fps = len(self.fps_counter) / max(
             self.fps_counter[-1] - self.fps_counter[0], 0.001
         ) if len(self.fps_counter) > 1 else 0
-        txt(f"FPS: {fps:.1f}  |  Frame #{self.frame_count}", 10, y, C["text_dim"], 0.37)
+        txt(f"FPS {fps:.0f}  |  #{self.frame_count}", 10, y, C["text_dim"], 0.28)
 
-        y += 20; line(y)
+        y += 12; line(y)
 
         # ── Gesture saat ini ────────────────────────────────────
-        y += 18
-        txt("GESTURE DETECTED", 10, y, C["accent2"], 0.42, 1)
-        y += 20
-        gname = self.current_gesture.upper() if self.current_gesture else "—"
-        g_col = C["accent"] if self.current_gesture not in ("idle", "—", "unknown") else C["text_dim"]
-        txt(gname, 10, y, g_col, 0.65, 2)
-        y += 18
-        bar("Conf", self.gesture_conf * 100, y, color=C["accent"])
+        y += 14; y = section("GESTURE", y)
+        gname = self.current_gesture.upper() if self.current_gesture else "-"
+        g_col = C["accent"] if self.current_gesture not in ("idle", "-", "unknown") else C["text_dim"]
+        txt(gname, 10, y, g_col, 0.44, 1)
+        y += 13
+        bar("conf", self.gesture_conf * 100, y, color=C["accent"])
 
-        y += 20; line(y)
+        y += 14; line(y)
 
         # ── Emosi ───────────────────────────────────────────────
-        y += 18
-        txt("FACE ANALYSIS", 10, y, C["accent2"], 0.42, 1)
-        y += 18
+        y += 14; y = section("FACE", y)
         emo_label = EMOTION_EMOJI.get(self.current_emotion, self.current_emotion.upper())
         e_col = EMOTION_COLORS.get(self.current_emotion, C["text"])
-        txt(emo_label, 10, y, e_col, 0.55, 2)
-        y += 18
+        txt(emo_label, 10, y, e_col, 0.38, 1)
+        y += 13
 
         # Emotion bars
         for emo in ["happy", "sad", "angry", "surprised", "fear", "neutral"]:
             score = self.emotion_scores.get(emo, 0.0)
             bar(emo[:7], score, y, color=EMOTION_COLORS.get(emo, C["accent"]))
-            y += 18
+            y += 13
 
-        y += 4; line(y)
+        y += 2; line(y)
 
         # ── Usia & Gender ────────────────────────────────────────
-        y += 18
-        txt("IDENTITY ESTIMATE", 10, y, C["accent2"], 0.42, 1)
-        y += 20
-        ag_col = C["warn"] if self.current_age != "—" else C["text_dim"]
-        txt(f"Age  : {self.current_age}", 10, y, ag_col, 0.52, 1)
-        y += 18
-        gnd = self.current_gender.upper() if self.current_gender != "—" else "—"
+        y += 14; y = section("IDENTITY", y)
+        ag_col = C["warn"] if self.current_age != "-" else C["text_dim"]
+        gnd = self.current_gender.upper() if self.current_gender != "-" else "-"
         gnd_col = (200, 120, 255) if gnd == "WOMAN" else (120, 180, 255) if gnd == "MAN" else C["text_dim"]
-        txt(f"Gender: {gnd}", 10, y, gnd_col, 0.52, 1)
+        txt(f"Age {self.current_age}", 10, y, ag_col, 0.32, 1)
+        txt(gnd, 160, y, gnd_col, 0.32, 1)
 
-        y += 14; line(y)
+        y += 12; line(y)
 
         # ── Event Log ───────────────────────────────────────────
-        y += 16
-        txt("EVENT LOG", 10, y, C["accent2"], 0.42, 1)
-        y += 16
+        y += 14; y = section("EVENT LOG", y)
         for i, entry in enumerate(self.event_log):
             col = C["accent"] if i == 0 else C["text_dim"]
-            txt(entry[:42], 10, y, col, 0.35)
-            y += 14
-            if y > WIN_H - 30:
+            txt(entry[:46], 10, y, col, 0.28)
+            y += 12
+            if y > WIN_H - 138:
                 break
 
-        y = WIN_H - 70; line(y)
+        y = WIN_H - 128; line(y)
 
         # ── Panduan singkat ─────────────────────────────────────
-        y += 14
-        txt("GESTURE GUIDE", 10, y, C["accent2"], 0.38)
-        y += 13
+        y += 12; y = section("GUIDE", y)
         guides = [
             "Fist  -> Close App",
             "Peace -> Screenshot",
@@ -673,7 +666,7 @@ class GestureMind:
             "Both Hands -> Lock",
         ]
         for g in guides:
-            txt(g, 10, y, C["text_dim"], 0.33)
+            txt(g, 10, y, C["text_dim"], 0.28)
             y += 12
 
         return panel
@@ -722,7 +715,7 @@ class GestureMind:
 
     def _draw_gesture_feedback(self, frame, h, w):
         """Tampilkan gesture aktif sebagai overlay besar di tengah"""
-        if self.current_gesture in ("idle", "—", "unknown", ""):
+        if self.current_gesture in ("idle", "-", "unknown", ""):
             return
         now = time.time()
         age = now - self.gesture_active_ts
@@ -731,16 +724,16 @@ class GestureMind:
         alpha = max(0, 1.0 - age / 1.5)
         overlay = frame.copy()
         text = self.current_gesture.upper()
-        scale = 1.2
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, scale, 2)
+        scale = 0.6
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, scale, 1)
         tx = (w - tw) // 2
-        ty = h - 80
-        cv2.rectangle(overlay, (tx - 15, ty - th - 10), (tx + tw + 15, ty + 10),
+        ty = h - 40
+        cv2.rectangle(overlay, (tx - 12, ty - th - 8), (tx + tw + 12, ty + 8),
                       (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+        cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
         col = C["accent"]
         cv2.putText(frame, text, (tx, ty),
-                    cv2.FONT_HERSHEY_DUPLEX, scale, col, 2, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_DUPLEX, scale, col, 1, cv2.LINE_AA)
 
     def _draw_scan_lines(self, frame):
         """Sudut brackets stylized (garis scan-line full-frame dihapus -- terlalu mengganggu visibilitas)"""
@@ -823,7 +816,7 @@ class GestureMind:
                 self._execute(gesture, extra)
             else:
                 if time.time() - self.gesture_active_ts > 2.0:
-                    self.current_gesture = "—"
+                    self.current_gesture = "-"
                     self.gesture_conf    = 0.0
 
             # ── Wajah: kirim ke analisis, poll hasil ────────────
