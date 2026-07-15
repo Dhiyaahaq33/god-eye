@@ -251,8 +251,11 @@ class GestureMind:
     # ──────────────────────────────────────────────────────────────
 
     def _landmarks_to_arr(self, hand_landmarks, w, h):
+        # API lama (mp.solutions) bungkus landmark di .landmark; Tasks API
+        # (GestureRecognizer) sudah kasih list mentah -- dukung keduanya.
+        landmarks = hand_landmarks.landmark if hasattr(hand_landmarks, "landmark") else hand_landmarks
         pts = []
-        for lm in hand_landmarks.landmark:
+        for lm in landmarks:
             pts.append((int(lm.x * w), int(lm.y * h), lm.z))
         return pts
 
