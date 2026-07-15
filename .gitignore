@@ -24,6 +24,9 @@ venv/
 .venv/
 env/
 
+# model AI resmi Google -- diunduh otomatis saat run pertama, jangan commit
+models/*.task
+
 # node
 node_modules/
 

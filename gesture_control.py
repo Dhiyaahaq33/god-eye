@@ -5,18 +5,24 @@
 ╚══════════════════════════════════════════════════════════════════╝
 
 Fitur:
-  ✦ Scroll otomatis (tangan naik/turun)
-  ✦ Tutup aplikasi (jempol ke bawah + telapak terbuka)
-  ✦ Volume up/down (jari telunjuk kanan/kiri)
-  ✦ Screenshot (pose OK / peace)
-  ✦ Minimize window (wave / lambaian tangan)
-  ✦ Lock screen (tangan silang di wajah)
+  ✦ Klasifikasi gesture pakai model resmi MediaPipe GestureRecognizer
+    (Google AI Edge) -- fallback otomatis ke heuristik landmark manual
+    kalau model gagal dimuat/diunduh
+  ✦ Scroll otomatis (telapak terbuka naik/turun)
+  ✦ Tutup aplikasi (kepalan / jempol ke bawah)
+  ✦ Volume up/down (jari telunjuk atas/bawah)
+  ✦ Screenshot (V-sign / Victory)
+  ✦ Minimize semua window (gesture ILoveYou)
+  ✦ Lock screen (dua tangan terlihat kamera)
+  ✦ Pause/Play media (OK sign)
   ✦ Analisis ekspresi wajah (happy, sad, angry, surprised, neutral, fear, disgust)
   ✦ Tebak usia & gender
-  ✦ Live HUD overlay terminal-style
+  ✦ Live HUD overlay terminal-style, fullscreen (toggle tombol F)
 
 Dependensi (install sekali):
-    pip install opencv-python mediapipe deepface numpy pyautogui pillow
+    pip install -r requirements.txt
+    (model GestureRecognizer ~8MB diunduh otomatis dari storage.googleapis.com
+     saat run pertama, ke folder models/)
 """
 
 import cv2
@@ -116,13 +122,79 @@ EMOTION_EMOJI = {
     "disgust"  : "DISGUST",
 }
 
+# ── Model resmi MediaPipe GestureRecognizer (Google AI Edge) ─────────
+# Sumber: https://ai.google.dev/edge/mediapipe/solutions/vision/gesture_recognizer
+# Model AI terlatih untuk 6 gesture baku (Closed_Fist, Open_Palm, Victory,
+# Thumb_Up, Thumb_Down, Pointing_Up, ILoveYou) -- jauh lebih akurat
+# dibanding heuristik landmark manual, dipakai sebagai jalur utama.
+# Kalau gagal diunduh/dimuat, otomatis fallback ke heuristik manual lama.
+MODEL_DIR         = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+GESTURE_MODEL_PATH = os.path.join(MODEL_DIR, "gesture_recognizer.task")
+GESTURE_MODEL_URL  = (
+    "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/"
+    "gesture_recognizer/float16/latest/gesture_recognizer.task"
+)
+
+# Kategori resmi -> (nama gesture internal, label aksi)
+TASK_GESTURE_MAP = {
+    "Closed_Fist" : ("close_app",   "CLOSE APP"),
+    "Victory"     : ("screenshot",  "SCREENSHOT"),
+    "Thumb_Up"    : ("thumbs_up",   "THUMBS UP"),
+    "Thumb_Down"  : ("thumbs_down", "THUMBS DOWN -> CLOSE"),
+    "Pointing_Up" : ("vol_up",      "VOLUME UP"),
+    "ILoveYou"    : ("minimize",    "MINIMIZE WINDOW"),
+}
+
+
+def _ensure_gesture_model():
+    """Unduh model GestureRecognizer resmi sekali saja kalau belum ada di disk."""
+    if os.path.exists(GESTURE_MODEL_PATH):
+        return True
+    try:
+        import urllib.request
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        print("[INFO] Mengunduh model GestureRecognizer resmi dari Google (~8MB)...")
+        urllib.request.urlretrieve(GESTURE_MODEL_URL, GESTURE_MODEL_PATH)
+        print("[INFO] Model GestureRecognizer berhasil diunduh.")
+        return True
+    except Exception as e:
+        print(f"[WARN] Gagal mengunduh model GestureRecognizer: {e}")
+        print("       Fallback ke deteksi gesture manual (heuristik landmark).")
+        return False
+
+
 # ════════════════════════════════════════════════════════════════════
 #  KELAS UTAMA
 # ════════════════════════════════════════════════════════════════════
 
 class GestureMind:
     def __init__(self):
-        # ── MediaPipe ──────────────────────────────────────────────
+        # ── GestureRecognizer resmi (Google AI Edge) -- opsional ────
+        # PENTING: harus dibuat SEBELUM mp.solutions.* (legacy API) --
+        # kalau dibalik, mediapipe di Windows salah cache resource-root
+        # internalnya jadi folder site-packages dan gagal buka model
+        # Tasks API manapun sesudahnya (bug urutan inisialisasi mediapipe).
+        self.gesture_recognizer = None
+        if _ensure_gesture_model():
+            try:
+                BaseOptions             = mp.tasks.BaseOptions
+                GestureRecognizer       = mp.tasks.vision.GestureRecognizer
+                GestureRecognizerOptions = mp.tasks.vision.GestureRecognizerOptions
+                VisionRunningMode       = mp.tasks.vision.RunningMode
+                options = GestureRecognizerOptions(
+                    # mediapipe di Windows juga salah resolve path absolut yang
+                    # pakai backslash (dianggap relatif) -- paksa forward-slash.
+                    base_options=BaseOptions(model_asset_path=GESTURE_MODEL_PATH.replace("\\", "/")),
+                    running_mode=VisionRunningMode.IMAGE,
+                    num_hands=2,
+                )
+                self.gesture_recognizer = GestureRecognizer.create_from_options(options)
+            except Exception as e:
+                print(f"[WARN] GestureRecognizer gagal diinisialisasi: {e}")
+                print("       Fallback ke deteksi gesture manual (heuristik landmark).")
+                self.gesture_recognizer = None
+
+        # ── MediaPipe (legacy Solutions API) ─────────────────────────
         self.mp_hands   = mp.solutions.hands
         self.mp_face    = mp.solutions.face_detection
         self.mp_pose    = mp.solutions.pose
@@ -222,8 +294,62 @@ class GestureMind:
     #  DETEKSI GESTURE
     # ──────────────────────────────────────────────────────────────
 
-    def _detect_gesture(self, all_hands_pts, frame_h, frame_w):
+    def _detect_gesture(self, all_hands_pts, frame_h, frame_w, task_result=None):
         """
+        Kembalikan (gesture_name, confidence, extra_data).
+        Prioritas: model resmi MediaPipe GestureRecognizer (kalau tersedia
+        dan berhasil mendeteksi tangan), fallback ke heuristik landmark
+        manual kalau modelnya tidak aktif atau tidak melihat tangan.
+        """
+        if task_result is not None and task_result.hand_landmarks:
+            return self._detect_gesture_task(task_result, frame_h, frame_w)
+        return self._detect_gesture_heuristic(all_hands_pts, frame_h, frame_w)
+
+    def _detect_gesture_task(self, task_result, frame_h, frame_w):
+        """Klasifikasi gesture pakai model resmi google-ai-edge/mediapipe GestureRecognizer."""
+        num_hands = len(task_result.hand_landmarks)
+        pts    = self._landmarks_to_arr(task_result.hand_landmarks[0], frame_w, frame_h)
+        states = self._finger_states(pts)
+        palm   = self._palm_center(pts)
+
+        # ── Dua tangan → Lock Screen (prioritas tertinggi) ────────
+        if num_hands >= 2:
+            return ("lock_screen", 0.85, {"action": "LOCK SCREEN"})
+
+        # ── OK Sign (jempol-telunjuk nempel) -- tidak ada di kategori
+        #    baku Google, tetap pakai deteksi jarak manual ──────────
+        thumb_tip, index_tip = pts[4], pts[8]
+        if math.dist(thumb_tip[:2], index_tip[:2]) < 30 and not states[2] and not states[3]:
+            return ("ok_sign", 0.88, {"action": "PAUSE/PLAY"})
+
+        category, score = None, 0.0
+        if task_result.gestures and task_result.gestures[0]:
+            top = task_result.gestures[0][0]
+            category, score = top.category_name, top.score
+
+        if category in TASK_GESTURE_MAP:
+            name, label = TASK_GESTURE_MAP[category]
+            return (name, score, {"action": label})
+
+        if category == "Open_Palm":
+            rel_y = pts[0][1] / frame_h
+            if rel_y < 0.35:
+                return ("scroll_up", score, {"action": "SCROLL UP", "dir": -1})
+            elif rel_y > 0.65:
+                return ("scroll_down", score, {"action": "SCROLL DOWN", "dir": 1})
+
+        # ── Telunjuk ke bawah -- tidak ada kategori baku Google
+        #    untuk "Pointing_Down", tetap pakai deteksi manual ──────
+        index_down = states[1] and not states[2] and not states[3] and not states[4]
+        if index_down and pts[8][1] > palm[1] + 30:
+            return ("vol_down", 0.8, {"action": "VOLUME DOWN"})
+
+        return ("unknown", score, {})
+
+    def _detect_gesture_heuristic(self, all_hands_pts, frame_h, frame_w):
+        """
+        Fallback lama: klasifikasi gesture murni dari landmark tangan,
+        dipakai kalau GestureRecognizer resmi gagal dimuat.
         Kembalikan (gesture_name, confidence, extra_data)
         """
         if not all_hands_pts:
@@ -360,6 +486,11 @@ class GestureMind:
         elif gesture == "thumbs_up" and can("thumbs_up"):
             self.last_action["thumbs_up"] = now
             self._log("Nice! (no action)")
+
+        elif gesture == "minimize" and can("minimize"):
+            pyautogui.hotkey("win", "m")
+            self.last_action["minimize"] = now
+            self._log("Minimize All Windows")
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -534,6 +665,8 @@ class GestureMind:
             "Index Up/Dn -> Vol",
             "Palm High/Low -> Scroll",
             "Thumb Up/Dn -> Like/Close",
+            "ILoveYou -> Minimize",
+            "OK Sign -> Pause/Play",
             "Both Hands -> Lock",
         ]
         for g in guides:
@@ -659,6 +792,12 @@ class GestureMind:
             # ── Proses MediaPipe ────────────────────────────────
             res_hands = self.hands.process(rgb)
             res_face  = self.face_det.process(rgb)
+
+            task_result = None
+            if self.gesture_recognizer is not None:
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                task_result = self.gesture_recognizer.recognize(mp_image)
+
             rgb.flags.writeable = True
 
             h, w = frame.shape[:2]
@@ -671,7 +810,7 @@ class GestureMind:
                     all_hands_pts.append(pts)
 
             # ── Deteksi gesture ──────────────────────────────────
-            gesture, conf, extra = self._detect_gesture(all_hands_pts, h, w)
+            gesture, conf, extra = self._detect_gesture(all_hands_pts, h, w, task_result)
 
             if gesture not in ("idle", "unknown"):
                 if gesture != self.current_gesture:
@@ -736,19 +875,21 @@ if __name__ == "__main__":
 ║          👁️  GESTURE MIND — Body Language OS Controller          ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  Pastikan dependensi sudah terinstall:                           ║
-║    pip install opencv-python mediapipe deepface numpy pyautogui  ║
+║    pip install -r requirements.txt                              ║
+║  (model GestureRecognizer resmi Google diunduh otomatis run 1x)  ║
 ║                                                                  ║
-║  Kontrol Gesture:                                                ║
-║   ✊  Kepalan        → Tutup Aplikasi (Alt+F4)                   ║
-║   ✌  Peace/V        → Screenshot                                ║
-║   ☝  Telunjuk atas  → Volume UP                                  ║
-║   👇  Telunjuk bawah → Volume DOWN                               ║
-║   🖐  Telapak tinggi → Scroll UP                                 ║
-║   🖐  Telapak rendah → Scroll DOWN                               ║
-║   👍  Jempol atas   → Like (no action)                          ║
-║   👎  Jempol bawah  → Tutup Aplikasi                            ║
-║   🤟  Dua Tangan   → Lock Screen                                ║
-║   👌  OK Sign       → Play/Pause Media                          ║
+║  Kontrol Gesture (model resmi Google, fallback heuristik):      ║
+║   ✊  Kepalan (Closed_Fist) → Tutup Aplikasi (Alt+F4)            ║
+║   ✌  Victory/Peace         → Screenshot                         ║
+║   ☝  Telunjuk atas (Pointing_Up) → Volume UP                    ║
+║   👇  Telunjuk bawah        → Volume DOWN                       ║
+║   🖐  Telapak (Open_Palm) tinggi → Scroll UP                    ║
+║   🖐  Telapak (Open_Palm) rendah → Scroll DOWN                  ║
+║   👍  Thumb_Up              → Like (no action)                  ║
+║   👎  Thumb_Down            → Tutup Aplikasi                    ║
+║   🤟  ILoveYou              → Minimize Semua Window             ║
+║   🤝  Dua Tangan            → Lock Screen                       ║
+║   👌  OK Sign               → Play/Pause Media                  ║
 ║                                                                  ║
 ║  Analisis Wajah (tiap 3 detik):                                  ║
 ║   😊 Emosi · 🎂 Usia · ⚧ Gender                                 ║
