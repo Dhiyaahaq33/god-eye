@@ -32,6 +32,15 @@ import queue
 from datetime import datetime
 from collections import deque
 
+# Terminal Windows default-nya pakai codepage cp1252, yang crash begitu ada
+# library (DeepFace, dll) nge-print emoji/unicode saat download model.
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 # ─── Optional: DeepFace (bisa dinonaktifkan jika tidak terinstall) ───
 try:
     from deepface import DeepFace
@@ -63,6 +72,7 @@ COOLDOWN = {
     "minimize"    : 1.5,
     "lock_screen" : 3.0,
     "face_analyze": 3.0,
+    "thumbs_up"   : 2.0,
 }
 
 # Warna tema (BGR untuk OpenCV)
@@ -97,13 +107,13 @@ EMOTION_COLORS = {
 }
 
 EMOTION_EMOJI = {
-    "happy"    : "😊 HAPPY",
-    "sad"      : "😢 SAD",
-    "angry"    : "😠 ANGRY",
-    "surprised": "😲 SURPRISED",
-    "neutral"  : "😐 NEUTRAL",
-    "fear"     : "😨 FEAR",
-    "disgust"  : "🤢 DISGUST",
+    "happy"    : "HAPPY",
+    "sad"      : "SAD",
+    "angry"    : "ANGRY",
+    "surprised": "SURPRISED",
+    "neutral"  : "NEUTRAL",
+    "fear"     : "FEAR",
+    "disgust"  : "DISGUST",
 }
 
 # ════════════════════════════════════════════════════════════════════
@@ -181,8 +191,12 @@ class GestureMind:
         mcp   = [2, 5, 9, 13, 17]
         open_ = []
 
-        # Jempol: bandingkan x (tangan kanan) atau posisi relatif
-        thumb_open = abs(pts[4][0] - pts[2][0]) > abs(pts[3][0] - pts[2][0])
+        # Jempol: pakai jarak ke pangkal kelingking (17), bukan cuma delta-x,
+        # supaya tetap akurat walau tangan miring/berputar terhadap kamera.
+        pinky_mcp = pts[17]
+        dist_tip = math.dist(pts[4][:2], pinky_mcp[:2])
+        dist_ip  = math.dist(pts[3][:2], pinky_mcp[:2])
+        thumb_open = dist_tip > dist_ip * 1.1
         open_.append(thumb_open)
 
         for i in range(1, 5):
@@ -237,7 +251,7 @@ class GestureMind:
         dist_ok = math.dist(thumb_tip[:2], index_tip[:2])
         ok_sign = dist_ok < 30 and not states[2] and not states[3]
         if ok_sign:
-            return ("ok_sign", 0.88, {"action": "PAUSE/PLAY 👌"}),
+            return ("ok_sign", 0.88, {"action": "PAUSE/PLAY 👌"})
 
         # ── Satu Jari Telunjuk ke Atas → Volume Up ────────────────
         index_up = (states[1] and not states[2] and not states[3]
@@ -291,39 +305,39 @@ class GestureMind:
         if gesture == "scroll_up" and can("scroll"):
             pyautogui.scroll(5)
             self.last_action["scroll"] = now
-            self._log("⬆ Scroll UP")
+            self._log("^ Scroll UP")
 
         elif gesture == "scroll_down" and can("scroll"):
             pyautogui.scroll(-5)
             self.last_action["scroll"] = now
-            self._log("⬇ Scroll DOWN")
+            self._log("v Scroll DOWN")
 
         elif gesture == "close_app" and can("close_app"):
             pyautogui.hotkey("alt", "F4")
             self.last_action["close_app"] = now
-            self._log("✖ Close App (Alt+F4)")
+            self._log("X Close App (Alt+F4)")
 
         elif gesture == "vol_up" and can("volume"):
             pyautogui.press("volumeup")
             self.last_action["volume"] = now
-            self._log("🔊 Volume UP")
+            self._log("Volume UP")
 
         elif gesture == "vol_down" and can("volume"):
             pyautogui.press("volumedown")
             self.last_action["volume"] = now
-            self._log("🔇 Volume DOWN")
+            self._log("Volume DOWN")
 
         elif gesture == "screenshot" and can("screenshot"):
             ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
             fn  = f"gesture_screenshot_{ts}.png"
             pyautogui.screenshot(fn)
             self.last_action["screenshot"] = now
-            self._log(f"📸 Screenshot: {fn}")
+            self._log(f"Screenshot: {fn}")
 
         elif gesture == "thumbs_down" and can("close_app"):
             pyautogui.hotkey("alt", "F4")
             self.last_action["close_app"] = now
-            self._log("👎 Close (Thumbs Down)")
+            self._log("Close (Thumbs Down)")
 
         elif gesture == "lock_screen" and can("lock_screen"):
             if sys.platform == "win32":
@@ -336,15 +350,16 @@ class GestureMind:
             else:
                 os.system("loginctl lock-session")
             self.last_action["lock_screen"] = now
-            self._log("🔒 Lock Screen!")
+            self._log("Lock Screen!")
 
         elif gesture == "ok_sign" and can("screenshot"):
             pyautogui.press("playpause")
             self.last_action["screenshot"] = now
-            self._log("⏯ Play/Pause")
+            self._log("Play/Pause")
 
-        elif gesture == "thumbs_up":
-            self._log("👍 Nice! (no action)")
+        elif gesture == "thumbs_up" and can("thumbs_up"):
+            self.last_action["thumbs_up"] = now
+            self._log("Nice! (no action)")
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -413,7 +428,7 @@ class GestureMind:
             self.current_age      = str(age) if isinstance(age, (int, float)) else age
             self.current_gender   = gender
             self.emotion_scores   = emotions
-            self._log(f"🧠 {dom_emo.upper()} | Age≈{self.current_age} | {gender}")
+            self._log(f"{dom_emo.upper()} | Age~{self.current_age} | {gender}")
         except queue.Empty:
             pass
 
@@ -470,7 +485,7 @@ class GestureMind:
         y += 18
         txt("FACE ANALYSIS", 10, y, C["accent2"], 0.42, 1)
         y += 18
-        emo_label = EMOTION_EMOJI.get(self.current_emotion, f"😐 {self.current_emotion.upper()}")
+        emo_label = EMOTION_EMOJI.get(self.current_emotion, self.current_emotion.upper())
         e_col = EMOTION_COLORS.get(self.current_emotion, C["text"])
         txt(emo_label, 10, y, e_col, 0.55, 2)
         y += 18
@@ -514,12 +529,12 @@ class GestureMind:
         txt("GESTURE GUIDE", 10, y, C["accent2"], 0.38)
         y += 13
         guides = [
-            "✊ Fist  → Close App",
-            "✌ Peace → Screenshot",
-            "☝ Index Up/Dn → Vol",
-            "🖐 Palm High/Low → Scroll",
-            "👍/👎 Thumb → Like/Close",
-            "🤟 Both Hands → Lock",
+            "Fist  -> Close App",
+            "Peace -> Screenshot",
+            "Index Up/Dn -> Vol",
+            "Palm High/Low -> Scroll",
+            "Thumb Up/Dn -> Like/Close",
+            "Both Hands -> Lock",
         ]
         for g in guides:
             txt(g, 10, y, C["text_dim"], 0.33)
@@ -592,10 +607,7 @@ class GestureMind:
                     cv2.FONT_HERSHEY_DUPLEX, scale, col, 2, cv2.LINE_AA)
 
     def _draw_scan_lines(self, frame):
-        """Efek scan-line tipis untuk look cyber"""
-        for y in range(0, frame.shape[0], 6):
-            cv2.line(frame, (0, y), (frame.shape[1], y), (0, 0, 0), 1)
-        # Sudut brackets
+        """Sudut brackets stylized (garis scan-line full-frame dihapus -- terlalu mengganggu visibilitas)"""
         L, T, col = 40, 3, C["accent"]
         h, w = frame.shape[:2]
         for (x, y, sx, sy) in [(0, 0, 1, 1), (w, 0, -1, 1),
@@ -620,7 +632,13 @@ class GestureMind:
         print("╔══════════════════════════════════════╗")
         print("║   GESTURE MIND — Kamera aktif! 🎥    ║")
         print("║   Tekan  Q  untuk keluar             ║")
+        print("║   Tekan  F  untuk toggle fullscreen  ║")
         print("╚══════════════════════════════════════╝")
+
+        window_name = "GESTURE MIND — Body Language OS Controller"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        is_fullscreen = True
 
         canvas = np.zeros((WIN_H, WIN_W, 3), dtype=np.uint8)
 
@@ -653,11 +671,7 @@ class GestureMind:
                     all_hands_pts.append(pts)
 
             # ── Deteksi gesture ──────────────────────────────────
-            result = self._detect_gesture(all_hands_pts, h, w)
-            # (ok_sign trick: bisa return tuple-in-tuple)
-            if isinstance(result, tuple) and isinstance(result[0], tuple):
-                result = result[0]
-            gesture, conf, extra = result
+            gesture, conf, extra = self._detect_gesture(all_hands_pts, h, w)
 
             if gesture not in ("idle", "unknown"):
                 if gesture != self.current_gesture:
@@ -694,11 +708,17 @@ class GestureMind:
             # Garis pemisah
             cv2.line(canvas, (CAM_W, 0), (CAM_W, WIN_H), C["accent2"], 1)
 
-            cv2.imshow("GESTURE MIND — Body Language OS Controller", canvas)
+            cv2.imshow(window_name, canvas)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q') or key == 27:
                 break
+            elif key == ord('f'):
+                is_fullscreen = not is_fullscreen
+                cv2.setWindowProperty(
+                    window_name, cv2.WND_PROP_FULLSCREEN,
+                    cv2.WINDOW_FULLSCREEN if is_fullscreen else cv2.WINDOW_NORMAL
+                )
 
         self.running = False
         cap.release()

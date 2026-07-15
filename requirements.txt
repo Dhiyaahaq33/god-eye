@@ -1,0 +1,21 @@
+# Kombinasi versi yang sudah teruji jalan bareng di Windows + Python 3.11.
+# JANGAN install mediapipe/tensorflow/protobuf terpisah tanpa pin ini --
+# pip akan otomatis menarik tensorflow terbaru yang butuh protobuf>=6.31,
+# dan itu merusak mediapipe.solutions (Hands/FaceDetection/Pose legacy API).
+#
+# opencv-python harus <5.0 -- versi 5.x menghapus data haarcascade bawaan
+# (cv2/data/*.xml) yang dibutuhkan DeepFace untuk deteksi wajah default.
+#
+# Install dengan:
+#   python -m venv .venv
+#   .venv\Scripts\pip install -r requirements.txt
+
+opencv-python==4.10.0.84
+mediapipe==0.10.9
+numpy==2.1.3
+pyautogui==0.9.54
+pillow==12.3.0
+deepface==0.0.100
+tensorflow==2.19.1
+tf-keras==2.19.0
+protobuf==3.20.3
