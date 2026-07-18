@@ -79,6 +79,7 @@ COOLDOWN = {
     "lock_screen" : 3.0,
     "face_analyze": 3.0,
     "thumbs_up"   : 2.0,
+    "ok_sign"     : 1.0,
 }
 
 # Warna tema (BGR untuk OpenCV)
@@ -129,19 +130,22 @@ EMOTION_EMOJI = {
 # dibanding heuristik landmark manual, dipakai sebagai jalur utama.
 # Kalau gagal diunduh/dimuat, otomatis fallback ke heuristik manual lama.
 MODEL_DIR         = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+SCREENSHOT_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
 GESTURE_MODEL_PATH = os.path.join(MODEL_DIR, "gesture_recognizer.task")
 GESTURE_MODEL_URL  = (
     "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/"
     "gesture_recognizer/float16/latest/gesture_recognizer.task"
 )
 
-# Kategori resmi -> (nama gesture internal, label aksi)
+# Kategori resmi -> (nama gesture internal, label aksi).
+# "Pointing_Up" sengaja TIDAK di sini -- arahnya (naik/turun volume)
+# dicek manual di _detect_gesture_task karena nama kategori Google tidak
+# menjamin arah fisik telunjuk (lihat komentar di sana).
 TASK_GESTURE_MAP = {
     "Closed_Fist" : ("close_app",   "CLOSE APP"),
     "Victory"     : ("screenshot",  "SCREENSHOT"),
     "Thumb_Up"    : ("thumbs_up",   "THUMBS UP"),
     "Thumb_Down"  : ("thumbs_down", "THUMBS DOWN -> CLOSE"),
-    "Pointing_Up" : ("vol_up",      "VOLUME UP"),
     "ILoveYou"    : ("minimize",    "MINIMIZE WINDOW"),
 }
 
@@ -260,10 +264,17 @@ class GestureMind:
         return pts
 
     def _finger_states(self, pts):
-        """Kembalikan [jempol, telunjuk, tengah, manis, kelingking] = True jika terbuka"""
+        """Kembalikan [jempol, telunjuk, tengah, manis, kelingking] = True jika terbuka.
+
+        Semua threshold berbasis JARAK ke titik referensi di telapak, bukan
+        perbandingan posisi atas/bawah (sumbu-y) -- jari yang menunjuk ke
+        bawah/miring/menyamping tetap kebaca benar. Versi lama membandingkan
+        tip.y < dip.y yang cuma bener kalau jari nunjuk ke atas; begitu
+        jari nunjuk ke bawah hasilnya kebalik (dibaca "nutup" padahal terbuka).
+        """
         tips  = [4, 8, 12, 16, 20]
-        dips  = [3, 7, 11, 15, 19]
-        mcp   = [2, 5, 9, 13, 17]
+        mcps  = [2, 5, 9, 13, 17]
+        wrist = pts[0]
         open_ = []
 
         # Jempol: pakai jarak ke pangkal kelingking (17), bukan cuma delta-x,
@@ -271,11 +282,15 @@ class GestureMind:
         pinky_mcp = pts[17]
         dist_tip = math.dist(pts[4][:2], pinky_mcp[:2])
         dist_ip  = math.dist(pts[3][:2], pinky_mcp[:2])
-        thumb_open = dist_tip > dist_ip * 1.1
-        open_.append(thumb_open)
+        open_.append(dist_tip > dist_ip * 1.1)
 
-        for i in range(1, 5):
-            open_.append(pts[tips[i]][1] < pts[dips[i]][1])
+        # 4 jari lain: terbuka kalau ujung jari jauh lebih jauh dari
+        # pergelangan tangan (wrist) dibanding pangkal jarinya (mcp) --
+        # rasio jarak, jadi tidak peduli tangan menghadap arah mana.
+        for tip_i, mcp_i in zip(tips[1:], mcps[1:]):
+            d_tip = math.dist(pts[tip_i][:2], wrist[:2])
+            d_mcp = math.dist(pts[mcp_i][:2], wrist[:2])
+            open_.append(d_tip > d_mcp * 1.15)
 
         return open_
 
@@ -314,15 +329,23 @@ class GestureMind:
         pts    = self._landmarks_to_arr(task_result.hand_landmarks[0], frame_w, frame_h)
         states = self._finger_states(pts)
         palm   = self._palm_center(pts)
+        n_open = sum(states)
 
         # ── Dua tangan → Lock Screen (prioritas tertinggi) ────────
         if num_hands >= 2:
             return ("lock_screen", 0.85, {"action": "LOCK SCREEN"})
 
-        # ── OK Sign (jempol-telunjuk nempel) -- tidak ada di kategori
-        #    baku Google, tetap pakai deteksi jarak manual ──────────
+        # Skala tangan (jarak wrist -> pangkal jari tengah) buat threshold
+        # relatif -- fixed-pixel threshold gagal kalau tangan deket/jauh
+        # dari kamera, itu penyebab OK Sign lambat/salah kebaca.
+        hand_scale = max(math.dist(pts[0][:2], pts[9][:2]), 1)
+
+        # ── OK Sign (jempol-telunjuk nempel, jari lain nutup) -- tidak
+        #    ada di kategori baku Google, tetap pakai deteksi jarak manual,
+        #    tapi threshold sekarang relatif ke ukuran tangan di frame ──
         thumb_tip, index_tip = pts[4], pts[8]
-        if math.dist(thumb_tip[:2], index_tip[:2]) < 30 and not states[2] and not states[3]:
+        ok_dist = math.dist(thumb_tip[:2], index_tip[:2])
+        if ok_dist < hand_scale * 0.35 and not states[2] and not states[3] and not states[4]:
             return ("ok_sign", 0.88, {"action": "PAUSE/PLAY"})
 
         category, score = None, 0.0
@@ -330,22 +353,31 @@ class GestureMind:
             top = task_result.gestures[0][0]
             category, score = top.category_name, top.score
 
+        # "Pointing_Up" dari Google itu nama kategori utk "telunjuk lurus",
+        # BUKAN jaminan arahnya ke atas -- telunjuk ke bawah pun sering
+        # kebaca kategori yang sama. Arah asli kita cek sendiri dari posisi
+        # ujung jari relatif ke telapak, baru tentukan naik/turun volume.
+        if category == "Pointing_Up":
+            if pts[8][1] < palm[1]:
+                return ("vol_up", score, {"action": "VOLUME UP"})
+            else:
+                return ("vol_down", score, {"action": "VOLUME DOWN"})
+
         if category in TASK_GESTURE_MAP:
             name, label = TASK_GESTURE_MAP[category]
             return (name, score, {"action": label})
 
-        if category == "Open_Palm":
+        # ── Telapak terbuka + posisi tinggi/rendah → Scroll ───────────
+        # Dicek langsung dari status jari (n_open>=4), BUKAN cuma nunggu
+        # category=="Open_Palm" -- classifier resmi sering balikin "None"
+        # saat tangan ada di pinggir frame (posisi scroll emang di situ),
+        # itu penyebab scroll ga ada respon sama sekali sebelumnya.
+        if n_open >= 4:
             rel_y = pts[0][1] / frame_h
             if rel_y < 0.35:
-                return ("scroll_up", score, {"action": "SCROLL UP", "dir": -1})
+                return ("scroll_up", max(score, 0.7), {"action": "SCROLL UP", "dir": -1})
             elif rel_y > 0.65:
-                return ("scroll_down", score, {"action": "SCROLL DOWN", "dir": 1})
-
-        # ── Telunjuk ke bawah -- tidak ada kategori baku Google
-        #    untuk "Pointing_Down", tetap pakai deteksi manual ──────
-        index_down = states[1] and not states[2] and not states[3] and not states[4]
-        if index_down and pts[8][1] > palm[1] + 30:
-            return ("vol_down", 0.8, {"action": "VOLUME DOWN"})
+                return ("scroll_down", max(score, 0.7), {"action": "SCROLL DOWN", "dir": 1})
 
         return ("unknown", score, {})
 
@@ -375,10 +407,12 @@ class GestureMind:
             return ("screenshot", 0.92, {"action": "SCREENSHOT ✌"})
 
         # ── OK Sign → Jeda / Play-Pause ───────────────────────────
+        # Threshold relatif ke ukuran tangan di frame, bukan pixel tetap.
+        hand_scale = max(math.dist(pts[0][:2], pts[9][:2]), 1)
         thumb_tip  = pts[4]
         index_tip  = pts[8]
         dist_ok = math.dist(thumb_tip[:2], index_tip[:2])
-        ok_sign = dist_ok < 30 and not states[2] and not states[3]
+        ok_sign = dist_ok < hand_scale * 0.35 and not states[2] and not states[3] and not states[4]
         if ok_sign:
             return ("ok_sign", 0.88, {"action": "PAUSE/PLAY 👌"})
 
@@ -457,11 +491,13 @@ class GestureMind:
             self._log("Volume DOWN")
 
         elif gesture == "screenshot" and can("screenshot"):
-            ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-            fn  = f"gesture_screenshot_{ts}.png"
-            pyautogui.screenshot(fn)
+            os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+            ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(SCREENSHOT_DIR, f"gesture_screenshot_{ts}.png")
+            pyautogui.screenshot(path)
             self.last_action["screenshot"] = now
-            self._log(f"Screenshot: {fn}")
+            self._log(f"Screenshot saved: screenshots/{os.path.basename(path)}")
+            print(f"[INFO] Screenshot disimpan di: {path}")
 
         elif gesture == "thumbs_down" and can("close_app"):
             pyautogui.hotkey("alt", "F4")
@@ -481,9 +517,9 @@ class GestureMind:
             self.last_action["lock_screen"] = now
             self._log("Lock Screen!")
 
-        elif gesture == "ok_sign" and can("screenshot"):
+        elif gesture == "ok_sign" and can("ok_sign"):
             pyautogui.press("playpause")
-            self.last_action["screenshot"] = now
+            self.last_action["ok_sign"] = now
             self._log("Play/Pause")
 
         elif gesture == "thumbs_up" and can("thumbs_up"):
