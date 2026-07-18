@@ -683,9 +683,23 @@ class GestureMind:
                 self.mp_draw_styles.get_default_hand_connections_style()
             )
 
-    def _overlay_face_box(self, frame, results_face, h, w):
+    def _update_face_bbox(self, results_face, h, w):
+        """Update self.face_bbox dari hasil deteksi wajah -- dipisah dari
+        drawing supaya tetap jalan di mode headless (tanpa window)."""
         if not results_face.detections:
             self.face_bbox = None
+            return
+        det = results_face.detections[0]
+        bb  = det.location_data.relative_bounding_box
+        x1  = int(bb.xmin * w)
+        y1  = int(bb.ymin * h)
+        bw  = int(bb.width * w)
+        bh  = int(bb.height * h)
+        self.face_bbox = (x1, y1, x1 + bw, y1 + bh)
+
+    def _overlay_face_box(self, frame, results_face, h, w):
+        self._update_face_bbox(results_face, h, w)
+        if not results_face.detections:
             return
         for det in results_face.detections:
             bb  = det.location_data.relative_bounding_box
@@ -694,7 +708,6 @@ class GestureMind:
             bw  = int(bb.width * w)
             bh  = int(bb.height * h)
             x2, y2 = x1 + bw, y1 + bh
-            self.face_bbox = (x1, y1, x2, y2)
 
             # Kotak stilisasi sudut
             col = EMOTION_COLORS.get(self.current_emotion, C["accent"])
@@ -748,7 +761,13 @@ class GestureMind:
     #  MAIN LOOP
     # ──────────────────────────────────────────────────────────────
 
-    def run(self):
+    def run(self, headless=False):
+        """
+        headless=True -> kamera & deteksi gesture tetap jalan normal (semua
+        aksi OS tetap dieksekusi), tapi TANPA window/HUD sama sekali --
+        tidak ada aplikasi yang kebuka, cuma proses background di terminal.
+        Keluar dengan Ctrl+C, atau tekan Q di terminal (Windows only).
+        """
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             print("[ERROR] Kamera tidak ditemukan!")
@@ -758,18 +777,42 @@ class GestureMind:
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
         cap.set(cv2.CAP_PROP_FPS, 30)
 
-        print("╔══════════════════════════════════════╗")
-        print("║   GESTURE MIND — Kamera aktif! 🎥    ║")
-        print("║   Tekan  Q  untuk keluar             ║")
-        print("║   Tekan  F  untuk toggle fullscreen  ║")
-        print("╚══════════════════════════════════════╝")
-
         window_name = "GESTURE MIND — Body Language OS Controller"
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         is_fullscreen = True
 
+        if headless:
+            print("╔══════════════════════════════════════╗")
+            print("║   GESTURE MIND — Mode HEADLESS       ║")
+            print("║   Kamera aktif, tanpa window/HUD.    ║")
+            print("║   Tekan Q (fokus terminal) atau      ║")
+            print("║   Ctrl+C untuk keluar.               ║")
+            print("╚══════════════════════════════════════╝")
+        else:
+            print("╔══════════════════════════════════════╗")
+            print("║   GESTURE MIND — Kamera aktif! 🎥    ║")
+            print("║   Tekan  Q  untuk keluar             ║")
+            print("║   Tekan  F  untuk toggle fullscreen  ║")
+            print("╚══════════════════════════════════════╝")
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
         canvas = np.zeros((WIN_H, WIN_W, 3), dtype=np.uint8)
+
+        try:
+            self._run_loop(cap, canvas, window_name, headless, is_fullscreen)
+        except KeyboardInterrupt:
+            print("\n[INFO] Dihentikan (Ctrl+C).")
+        finally:
+            self.running = False
+            cap.release()
+            if not headless:
+                cv2.destroyAllWindows()
+            print("\n[INFO] Gesture Mind ditutup. Sampai jumpa! 👋")
+
+    def _run_loop(self, cap, canvas, window_name, headless, is_fullscreen):
+        msvcrt = None
+        if headless and sys.platform == "win32":
+            import msvcrt
 
         while self.running:
             ret, raw = cap.read()
@@ -824,6 +867,17 @@ class GestureMind:
                 self._try_analyze_face(frame, self.face_bbox)
             self._poll_face_result()
 
+            if headless:
+                # Tetap update posisi wajah untuk frame berikutnya, tapi
+                # skip semua drawing/window -- tidak ada apk yang kebuka.
+                self._update_face_bbox(res_face, h, w)
+
+                if msvcrt is not None and msvcrt.kbhit():
+                    key = msvcrt.getch()
+                    if key in (b"q", b"Q"):
+                        break
+                continue
+
             # ── Render overlay kamera ────────────────────────────
             self._overlay_hand_skeleton(frame, res_hands)
             self._overlay_face_box(frame, res_face, h, w)
@@ -855,18 +909,22 @@ class GestureMind:
                     cv2.WINDOW_FULLSCREEN if is_fullscreen else cv2.WINDOW_NORMAL
                 )
 
-        self.running = False
-        cap.release()
-        cv2.destroyAllWindows()
-        print("\n[INFO] Gesture Mind ditutup. Sampai jumpa! 👋")
-
 
 # ════════════════════════════════════════════════════════════════════
 #  ENTRYPOINT
 # ════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("""
+    import argparse
+    parser = argparse.ArgumentParser(description="GESTURE MIND -- Body Language OS Controller")
+    parser.add_argument(
+        "--headless", action="store_true",
+        help="Kamera & deteksi gesture tetap jalan normal, tapi tanpa window/HUD sama sekali."
+    )
+    args = parser.parse_args()
+
+    if not args.headless:
+        print("""
 ╔══════════════════════════════════════════════════════════════════╗
 ║          👁️  GESTURE MIND — Body Language OS Controller          ║
 ╠══════════════════════════════════════════════════════════════════╣
@@ -891,7 +949,8 @@ if __name__ == "__main__":
 ║   😊 Emosi · 🎂 Usia · ⚧ Gender                                 ║
 ║                                                                  ║
 ║  Tekan  Q  atau  ESC  untuk keluar                              ║
+║  (atau jalankan dengan --headless untuk tanpa window)           ║
 ╚══════════════════════════════════════════════════════════════════╝
 """)
     app = GestureMind()
-    app.run()
+    app.run(headless=args.headless)
