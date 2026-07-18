@@ -957,7 +957,11 @@ if __name__ == "__main__":
         "--headless", action="store_true",
         help="Kamera & deteksi gesture tetap jalan normal, tapi tanpa window/HUD sama sekali."
     )
-    args = parser.parse_args()
+    # parse_known_args -- kalau ada argumen nyasar/aneh (misal salah paste,
+    # tanda hubung nyempil dari terminal/clipboard), jangan crash, cuma abaikan.
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        print(f"[WARN] Argumen tidak dikenali, diabaikan: {unknown}")
 
     if not args.headless:
         print("""
