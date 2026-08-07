@@ -24,9 +24,21 @@ venv/
 .venv/
 env/
 
+# model AI resmi Google -- diunduh otomatis saat run pertama, jangan commit
+models/*.task
+
+# hasil screenshot gesture -- output runtime, bukan source
+screenshots/
+
 # node
 node_modules/
 
 # os
 .DS_Store
 Thumbs.db
+.claude/
+*.log
+backtest_out.txt
+*.timestamp-*.mjs
+dashboard.exe
+.claude/worktrees/
